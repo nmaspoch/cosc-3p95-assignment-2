@@ -30,11 +30,15 @@ def receive_file(sck: socket.socket, filename):
             received_bytes += len(chunk)
 
 def handle_client(conn):
+    print(f"Client connected, expecting {num_files} files")
     num_files = receive_file_size(conn)
     for i in range(num_files):
+        print(f"Receiving file {i}...")
         filepath = os.path.join(download_folder, f"received-{time.time()}-{i}.bin")
         receive_file(conn, filepath)
+        print(f"File {i} received.")
     conn.close()
+    print("Client disconnected.")
 
 download_folder = "./downloads"
 os.makedirs(download_folder, exist_ok=True)

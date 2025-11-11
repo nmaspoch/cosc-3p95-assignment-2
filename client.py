@@ -56,8 +56,8 @@ print('All Files:', files)
 
 with socket.create_connection(("localhost", 3000)) as conn:
     conn.sendall(struct.pack("<Q", len(files)))
+    print("Connected to the server.")
     for file in files:
-        print("Connected to the server.")
         print(f'Sending file {file}')
         send_file(conn, os.path.join(upload_folder, file))  
         print("Sent.")
