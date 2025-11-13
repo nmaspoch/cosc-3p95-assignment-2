@@ -1,4 +1,4 @@
-import os, socket, struct, random, time
+import os, socket, struct, random, time, zlib
 
 from opentelemetry import trace, metrics
 from opentelemetry.sdk.trace import TracerProvider
@@ -64,15 +64,30 @@ def send_file(sck: socket.socket, filename, index):
         sent_file.add_event(f"Sending file {index}")
         sent_file.set_attribute("file_name", filename)
         sent_file.set_attribute("index", index)
-        # Get the size of the outgoing file.
-        filesize = os.path.getsize(filename)
-        sent_file.set_attribute("file_size", filesize)
-        # First inform the server the amount of bytes that will be sent.
-        sck.sendall(struct.pack("<Q", filesize))
-        # Send the file in 1024-bytes chunks.
+
         with open(filename, "rb") as f:
-            while read_bytes := f.read(1024):
-                sck.sendall(read_bytes)
+            original_file = f.read()
+        sent_file.add_event("Compressing file")
+        compressed_file = zlib.compress(original_file, zlib.Z_BEST_COMPRESSION)
+        sent_file.add_event("Compressed file")
+
+        original_size = len(original_file)
+        compressed_size = len(compressed_file)
+
+        sent_file.set_attribute("original_size", original_size)
+        sent_file.set_attribute("compressed_size", compressed_size)
+
+        compress_ratio = (original_size - compressed_size) / original_size
+        sent_file.set_attribute("compression_ratio", compress_ratio)
+
+        # First inform the server the amount of bytes that will be sent.
+        sck.sendall(struct.pack("<Q", compressed_size))
+        # Send the file in 1024-bytes chunks.
+        offset = 0
+        while offset < compressed_size:
+            chunk = compressed_file[offset:offset + 1024]
+            sck.sendall(chunk)
+            offset += len(chunk)
         sent_file.add_event(f"File {index} uploaded")
 
 # Must avoid conflicts between clients

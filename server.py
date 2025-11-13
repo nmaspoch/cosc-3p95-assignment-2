@@ -1,4 +1,4 @@
-import socket, os, struct, concurrent.futures, time
+import socket, os, struct, concurrent.futures, time, zlib
 
 from opentelemetry import trace, metrics
 from opentelemetry.sdk.trace import TracerProvider
@@ -35,7 +35,8 @@ metrics.set_meter_provider(provider)
 meter = metrics.get_meter("server.meter")
 
 files_received_counter = meter.create_counter("files.received", "Number of files received")
-file_size_histogram = meter.create_histogram(name="files.size", unit="bytes", description="Distribution of file sizes")
+compressed_size_histogram = meter.create_histogram(name="files.compressed_size", unit="bytes", description="Distribution of compressed file sizes")
+decompressed_size_histogram = meter.create_histogram(name="files.decompressed_size", unit="bytes", description="Distribution of decompressed file sizes")
 
 sampling_rate = float(os.environ.get("SAMPLING_RATE", "1.0"))  
 if sampling_rate >= 1.0:
@@ -55,30 +56,51 @@ def receive_file_size(sck: socket.socket):
         chunk = sck.recv(expected_bytes - received_bytes)
         stream += chunk
         received_bytes += len(chunk)
-    filesize = struct.unpack(fmt, stream)[0]
-    return filesize
+    file_size = struct.unpack(fmt, stream)[0]
+    return file_size
 
 
 def receive_file(sck: socket.socket, filename, index):
     with tracer.start_as_current_span("file_span") as file_span:
-        file_span.add_event(f'Received file {index}')
         file_span.set_attribute("name", filename)
         file_span.set_attribute("index", index)
 
-        filesize = receive_file_size(sck)
-        file_span.set_attribute("filesize", filesize)
-        file_size_histogram.record(filesize)
-        with open(filename, "wb") as f:
-            received_bytes = 0
-            while received_bytes < filesize:
-                bytes_to_receive = min(1024, filesize - received_bytes)
-                chunk = sck.recv(bytes_to_receive)
-                if not chunk:
-                    raise ConnectionError(f"Connection closed. Received {received_bytes}/{filesize} bytes")
-                f.write(chunk)
-                received_bytes += len(chunk)
-        file_span.add_event(f'Received {received_bytes} bytes out of {filesize} total bytes')
+        compressed_size = receive_file_size(sck)
+        file_span.set_attribute("compressed_size", compressed_size)
+        compressed_size_histogram.record(compressed_size)
+
+        compressed_data = bytes()
+        received_bytes = 0
+        
+        num_chunks = 0
+        while received_bytes < compressed_size:
+            bytes_to_receive = min(1024, compressed_size - received_bytes)
+            chunk = sck.recv(bytes_to_receive)
+            if not chunk:
+                raise ConnectionError(f"Connection closed. Received {received_bytes}/{compressed_size} bytes")
+            
+            compressed_data += chunk
+            received_bytes += len(chunk)
+            num_chunks += 1
+        file_span.set_attribute("num_chunks", num_chunks)
+        file_span.add_event(f'Received {received_bytes} bytes out of {compressed_size} total bytes for file {index}')
+
         files_received_counter.add(1)
+
+        file_span.add_event("Decompressing file")
+        decompressed_data = zlib.decompress(compressed_data)
+        file_span.add_event("Decompressed file")
+        
+        with open(filename, "wb") as f:
+            f.write(decompressed_data)
+
+        original_size = len(decompressed_data)
+
+        file_span.set_attribute("original_size", original_size)
+        file_span.set_attribute("compressed_size", compressed_size)
+
+        compress_ratio = (original_size - compressed_size) / original_size
+        file_span.set_attribute("compression_ratio", compress_ratio)
 
 def handle_client(conn, address):
     with tracer.start_as_current_span("client_span") as client_span:
