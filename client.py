@@ -4,16 +4,16 @@ from opentelemetry import trace, metrics
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import (
     BatchSpanProcessor,
-    ConsoleSpanExporter,
 )
+
+from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
 
 from opentelemetry.sdk.resources import Resource
 
+from opentelemetry import metrics
+from opentelemetry.exporter.otlp.proto.http.metric_exporter import OTLPMetricExporter
 from opentelemetry.sdk.metrics import MeterProvider
-from opentelemetry.sdk.metrics.export import (
-    ConsoleMetricExporter,
-    PeriodicExportingMetricReader,
-)
+from opentelemetry.sdk.metrics.export import PeriodicExportingMetricReader
 
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.sampling import ALWAYS_ON, TraceIdRatioBased
@@ -29,17 +29,19 @@ if sampling_rate >= 1.0:
 else:
     provider = TracerProvider(sampler=TraceIdRatioBased(sampling_rate), resource=resource)
     
-processor = BatchSpanProcessor(ConsoleSpanExporter())
+processor = BatchSpanProcessor(OTLPSpanExporter(endpoint="http://localhost:4318/v1/traces"))
 provider.add_span_processor(processor)
 # Sets the global default tracer provider
 trace.set_tracer_provider(provider)
 # Creates a tracer from the global tracer provider
 tracer = trace.get_tracer("client.tracer")
 
-metric_reader = PeriodicExportingMetricReader(ConsoleMetricExporter())
-provider = MeterProvider(metric_readers=[metric_reader])
+reader = PeriodicExportingMetricReader(
+    OTLPMetricExporter(endpoint="http://localhost:4318/v1/metrics")
+)
+meterProvider = MeterProvider(resource=resource, metric_readers=[reader])
 # Sets the global default meter provider
-metrics.set_meter_provider(provider)
+metrics.set_meter_provider(meterProvider) 
 # Creates a meter from the global meter provider
 meter = metrics.get_meter("client.meter")
 
