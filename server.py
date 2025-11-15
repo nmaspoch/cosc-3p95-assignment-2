@@ -19,28 +19,41 @@ from opentelemetry.sdk.trace.sampling import ALWAYS_ON, TraceIdRatioBased
 
 from cryptography.fernet import Fernet
 
-resource = Resource.create({"service.name": "file-transfer-server"}) 
 sampling_rate = float(os.environ.get("SAMPLING_RATE", "1.0"))  
-if sampling_rate >= 1.0:
-    provider = TracerProvider(sampler=ALWAYS_ON, resource=resource)
+tracing_enabled = os.environ.get("TRACING_ENABLED", "true").lower() == "true"
+
+if tracing_enabled:
+    # Existing tracer setup
+    resource = Resource.create({"service.name": "file-transfer-server"}) 
+    sampling_rate = float(os.environ.get("SAMPLING_RATE", "1.0"))  
+    if sampling_rate >= 1.0:
+        tracerProvider = TracerProvider(sampler=ALWAYS_ON, resource=resource)
+    else:
+        tracerProvider = TracerProvider(sampler=TraceIdRatioBased(sampling_rate), resource=resource)
+        
+    processor = BatchSpanProcessor(OTLPSpanExporter(endpoint="http://localhost:4318/v1/traces"))
+    tracerProvider.add_span_processor(processor)
+    trace.set_tracer_provider(tracerProvider)
+    tracer = trace.get_tracer("server.tracer")
+
+    reader = PeriodicExportingMetricReader(
+        OTLPMetricExporter(endpoint="http://localhost:4318/v1/metrics"),
+        export_interval_millis=5000  
+    )
+    meterProvider = MeterProvider(resource=resource, metric_readers=[reader])
+    metrics.set_meter_provider(meterProvider) 
+    meter = metrics.get_meter("server.meter")
 else:
-    provider = TracerProvider(sampler=TraceIdRatioBased(sampling_rate), resource=resource)
-
-processor = BatchSpanProcessor(OTLPSpanExporter(endpoint="http://localhost:4318/v1/traces"))
-provider.add_span_processor(processor)
-# Sets the global default tracer provider
-trace.set_tracer_provider(provider)
-# Creates a tracer from the global tracer provider
-tracer = trace.get_tracer("server.tracer")
-
-reader = PeriodicExportingMetricReader(
-    OTLPMetricExporter(endpoint="http://localhost:4318/v1/metrics")
-)
-meterProvider = MeterProvider(resource=resource, metric_readers=[reader])
-# Sets the global default meter provider
-metrics.set_meter_provider(meterProvider) 
-# Creates a meter from the global meter provider
-meter = metrics.get_meter("server.meter")
+    # Use no-op providers (no telemetry collected)
+    from opentelemetry.sdk.trace import TracerProvider as NoOpTracerProvider
+    from opentelemetry.sdk.metrics import MeterProvider as NoOpMeterProvider
+    
+    trace.set_tracer_provider(NoOpTracerProvider())
+    tracer = trace.get_tracer("server.tracer")
+    
+    metrics.set_meter_provider(NoOpMeterProvider())
+    meter = metrics.get_meter("server.meter")
+    
 
 files_received_counter = meter.create_counter("files.received", "Number of files received")
 compressed_size_histogram = meter.create_histogram(name="files.compressed_size", unit="bytes", description="Distribution of compressed file sizes")
@@ -151,3 +164,7 @@ with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
             print("Waiting for the client...")
             conn, address = server.accept()
             executor.submit(handle_client, conn, address)
+
+if tracing_enabled:
+    tracerProvider.shutdown()  
+    meterProvider.shutdown()
