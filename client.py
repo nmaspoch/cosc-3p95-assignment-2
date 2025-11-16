@@ -58,6 +58,8 @@ files_generated_counter = meter.create_counter("files.generated", "Number of fil
 compressed_size_histogram = meter.create_histogram(name="files.compressed_size", unit="bytes", description="Distribution of compressed file sizes")
 encrypted_size_histogram = meter.create_histogram(name="files.encrypted_size", unit="bytes", description="Distribution of encrypted file sizes")
 original_size_histogram = meter.create_histogram(name="files.original_size", unit="bytes", description="Distribution of original file sizes")
+# NEW: Counter for compression failures
+compression_failure_counter = meter.create_counter("compression.failures", "Number of compression failures")
 
 key = b'nyY7ownDE1chVYqULAOrHQ7BYOlDc_FL-7XMEI4yihI='
 cipher = Fernet(key)
@@ -89,11 +91,31 @@ def send_file(sck: socket.socket, filename, index):
         original_size = len(original_file)
         original_size_histogram.record(original_size)
         
+        # Determine if file is large
+        is_large_file = original_size > 10 * 1024 * 1024  # > 10 MB
+        sent_file.set_attribute("is_large_file", is_large_file)
+        
         # Decide whether to compress
         is_compressed = False
+        bug_triggered = False
+        
         if original_size > 0:
             sent_file.add_event("Compressing file")
-            compressed_file = zlib.compress(original_file, zlib.Z_BEST_COMPRESSION)
+            
+            # INJECTED BUG: 30% chance of using wrong compression for large files
+            # This causes poor/no compression and can lead to data corruption issues
+            compression_level = zlib.Z_BEST_COMPRESSION
+            
+            if is_large_file and random.random() < 0.3:
+                compression_level = zlib.Z_NO_COMPRESSION  # BUG: No compression!
+                bug_triggered = True
+                compression_failure_counter.add(1)
+                sent_file.set_attribute("bug_triggered", True)
+                sent_file.add_event("BUG: Compression disabled for large file")
+            else:
+                sent_file.set_attribute("bug_triggered", False)
+            
+            compressed_file = zlib.compress(original_file, compression_level)
             sent_file.add_event("Compressed file")
             
             compressed_size = len(compressed_file)
@@ -118,6 +140,12 @@ def send_file(sck: socket.socket, filename, index):
         if original_size > 0:
             compress_ratio = (original_size - compressed_size) / original_size
             sent_file.set_attribute("compression_ratio", compress_ratio)
+            
+        # Statistical Debugging predicates (8 predicates total)
+        # File size predicates
+        sent_file.set_attribute("file_size_huge", original_size > 50 * 1024 * 1024)  # > 50MB
+        sent_file.set_attribute("file_size_medium", 1024 * 1024 < original_size <= 10 * 1024 * 1024)  # 1-10MB
+        sent_file.set_attribute("file_size_small", original_size <= 1024 * 1024)  # <= 1MB
 
         sent_file.add_event("Encrypting file")
         encrypted_file = cipher.encrypt(data_to_encrypt)
@@ -126,6 +154,11 @@ def send_file(sck: socket.socket, filename, index):
         encrypted_size = len(encrypted_file)
         encrypted_size_histogram.record(encrypted_size)
         sent_file.set_attribute("encrypted_size", encrypted_size)
+        
+        # Check if encrypted size is unexpectedly large
+        encryption_overhead = (encrypted_size - compressed_size) / compressed_size if compressed_size > 0 else 0
+        sent_file.set_attribute("encryption_overhead", encryption_overhead)
+        sent_file.set_attribute("encryption_overhead_high", encryption_overhead > 0.5)
 
         # Send compression flag (1 byte: 1=compressed, 0=not compressed)
         sck.sendall(struct.pack("B", 1 if is_compressed else 0))
