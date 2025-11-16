@@ -96,11 +96,12 @@ def receive_file(sck: socket.socket, filename, index):
         encrypted_size_histogram.record(encrypted_size)
 
         encrypted_data = bytes()
+        chunk_size = 65536
         received_bytes = 0
         
         num_chunks = 0
         while received_bytes < encrypted_size:
-            bytes_to_receive = min(1024, encrypted_size - received_bytes)
+            bytes_to_receive = min(chunk_size, encrypted_size - received_bytes)
             chunk = sck.recv(bytes_to_receive)
             if not chunk:
                 raise ConnectionError(f"Connection closed. Received {received_bytes}/{encrypted_size} bytes")
